@@ -152,6 +152,20 @@ func camuxStatus(target string) string {
 	return s
 }
 
+// isResumableStatus reports whether an agent in this status can be
+// brought back with `roster resume`. These all mean "the registry knows
+// about this agent but no live tmux session is serving it":
+//   - "stopped":   no target ever assigned, or roster stop'd it
+//   - "not-found": target was assigned but tmux session is gone (post-reboot)
+//   - "dead":      tmux session exists but the claude process inside exited
+func isResumableStatus(s string) bool {
+	switch s {
+	case "stopped", "not-found", "dead":
+		return true
+	}
+	return false
+}
+
 // findJSONLPath returns the path of the JSONL file for a Claude session.
 //
 // Always trust the registered uuid when its jsonl exists — multiple
@@ -533,10 +547,12 @@ func handleNotify(w http.ResponseWriter, r *http.Request, id string) {
 		from = "ui"
 	}
 
-	// Self-heal #1: if the recipient is stopped, resume it. Sending a
-	// message to a stopped orch was previously a hard error; the user's
-	// intent is clearly "talk to this thing" so we boot it for them.
-	if a, _ := loadAgentMerged(id); a != nil && a.Status == "stopped" {
+	// Self-heal #1: if the recipient isn't currently running, resume it.
+	// Sending a message to a stopped/not-found/dead orch was previously a
+	// hard error; the user's intent is clearly "talk to this thing" so we
+	// boot it for them. (After a reboot, tmux sessions are gone but the
+	// registry persists — those orchs report "not-found", not "stopped".)
+	if a, _ := loadAgentMerged(id); a != nil && isResumableStatus(a.Status) {
 		out, err := exec.Command(rosterBin, "resume", id).CombinedOutput()
 		if err != nil {
 			http.Error(w, fmt.Sprintf("resume %s: %v — %s", id, err, strings.TrimSpace(string(out))), http.StatusInternalServerError)
