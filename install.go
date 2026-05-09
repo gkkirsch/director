@@ -17,7 +17,7 @@ type installReq struct {
 	Marketplace string `json:"marketplace"`
 	// Source URL/GitHub slug. Only used if marketplace isn't registered.
 	Source string `json:"source,omitempty"`
-	// Restart claude (kill + roster resume) after install so the running
+	// Restart claude (kill + roster ensure) after install so the running
 	// agent picks up the new plugin. Without this the plugin is installed
 	// to disk but won't load until the next spawn.
 	Restart bool `json:"restart,omitempty"`
@@ -113,13 +113,13 @@ func marketplaceRegistered(dir, name string) bool {
 	return false
 }
 
-// restartAgent kills the amux window and re-spawns via roster resume so
+// restartAgent kills the amux window and re-spawns via roster ensure so
 // claude reads the fresh installed_plugins.json on boot.
 func restartAgent(id, target string) {
 	time.Sleep(1 * time.Second)
 	_ = exec.Command(amuxBin, "kill", target).Run()
 	time.Sleep(500 * time.Millisecond)
-	_ = exec.Command(rosterBin, "resume", id).Run()
+	_ = exec.Command(rosterBin, "ensure", id).Run()
 }
 
 // marketplaceReq is POST /api/agents/:id/marketplaces.

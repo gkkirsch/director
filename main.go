@@ -153,7 +153,7 @@ func camuxStatus(target string) string {
 }
 
 // isResumableStatus reports whether an agent in this status can be
-// brought back with `roster resume`. These all mean "the registry knows
+// brought back with `roster ensure`. These all mean "the registry knows
 // about this agent but no live tmux session is serving it":
 //   - "stopped":   no target ever assigned, or roster stop'd it
 //   - "not-found": target was assigned but tmux session is gone (post-reboot)
@@ -547,15 +547,15 @@ func handleNotify(w http.ResponseWriter, r *http.Request, id string) {
 		from = "ui"
 	}
 
-	// Self-heal #1: if the recipient isn't currently running, resume it.
+	// Self-heal #1: if the recipient isn't currently running, ensure it.
 	// Sending a message to a stopped/not-found/dead orch was previously a
 	// hard error; the user's intent is clearly "talk to this thing" so we
 	// boot it for them. (After a reboot, tmux sessions are gone but the
 	// registry persists — those orchs report "not-found", not "stopped".)
 	if a, _ := loadAgentMerged(id); a != nil && isResumableStatus(a.Status) {
-		out, err := exec.Command(rosterBin, "resume", id).CombinedOutput()
+		out, err := exec.Command(rosterBin, "ensure", id).CombinedOutput()
 		if err != nil {
-			http.Error(w, fmt.Sprintf("resume %s: %v — %s", id, err, strings.TrimSpace(string(out))), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("ensure %s: %v — %s", id, err, strings.TrimSpace(string(out))), http.StatusInternalServerError)
 			return
 		}
 		// Wait for the agent to actually become ready before piping the
