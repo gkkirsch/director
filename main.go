@@ -683,6 +683,79 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// handleHealthDispatcher proxies `roster health director` so director-app's
+// setup page can probe dispatcher state without kicking another init
+// goroutine. The probe is read-only — never spawns, never modifies the
+// registry. The setup page polls this; when .healthy is true, the page
+// stops polling and gets out of the way.
+//
+// Returns 200 + JSON on success. On any error (roster missing, JSON parse
+// fail, agent not registered), returns a 200 with healthy=false and the
+// reason — the setup page renders the reason verbatim instead of having
+// to interpret HTTP status codes.
+func handleHealthDispatcher(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
+	cmd := exec.Command(rosterBin, "health", "director")
+	out, err := cmd.Output()
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		// Agent not registered yet, or roster missing entirely. Render
+		// as not-healthy with a reason so the UI can decide what to do.
+		stderr := ""
+		if ee, ok := err.(*exec.ExitError); ok {
+			stderr = strings.TrimSpace(string(ee.Stderr))
+		}
+		if stderr == "" {
+			stderr = err.Error()
+		}
+		_, _ = fmt.Fprintf(w, `{"id":"director","healthy":false,"reason":%q}`, stderr)
+		return
+	}
+	_, _ = w.Write(out)
+}
+
+// handleResetDispatcher is the server-side equivalent of the manual
+// "pkill + tmux kill-session director + Director --reset" recovery the
+// dogfood skill documents. Called by the "Reset Dispatcher" button on
+// the setup page when init has been failing repeatedly.
+//
+// Sequence:
+//  1. `roster forget director`  — kill the tmux session + drop the
+//     registry entry. Idempotent; safe if already gone.
+//  2. The next `roster ensure director` (which director-app's init
+//     goroutine will fire on the very next setup-page poll) sees no
+//     registry entry, falls through to `roster spawn director`, and
+//     spawns clean.
+//
+// We deliberately do NOT touch other orchs or the user's work spaces —
+// matches the surface area of director-app's --reset flag. Body is the
+// fresh `roster health director` output so the UI can show what state
+// it landed in. Errors come back as non-200 with a plain text body
+// the UI renders directly.
+func handleResetDispatcher(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method", http.StatusMethodNotAllowed)
+		return
+	}
+	if out, err := exec.Command(rosterBin, "forget", "director").CombinedOutput(); err != nil {
+		http.Error(w, "roster forget director: "+strings.TrimSpace(string(out)), http.StatusInternalServerError)
+		return
+	}
+	// Re-probe so the response describes the new state. After forget,
+	// we expect healthy=false / reason="no such agent" — director-app's
+	// init goroutine will pick it up on the next poll and spawn fresh.
+	out, _ := exec.Command(rosterBin, "health", "director").Output()
+	w.Header().Set("Content-Type", "application/json")
+	if len(out) == 0 {
+		_, _ = w.Write([]byte(`{"id":"director","healthy":false,"reason":"dispatcher cleared; init will respawn"}`))
+		return
+	}
+	_, _ = w.Write(out)
+}
+
 // --- router ----------------------------------------------------------------
 
 func router() http.Handler {
@@ -700,6 +773,8 @@ func router() http.Handler {
 
 	mux.HandleFunc("/api/fleet", handleFleet)
 	mux.HandleFunc("/api/doctor", handleDoctor)
+	mux.HandleFunc("/api/health/dispatcher", handleHealthDispatcher)
+	mux.HandleFunc("/api/dispatcher/reset", handleResetDispatcher)
 	mux.HandleFunc("/api/messaging/status", handleMessagingStatus)
 	mux.HandleFunc("/api/messaging/telegram/connect", handleMessagingTelegramConnect)
 	mux.HandleFunc("/api/messaging/telegram/disconnect", handleMessagingTelegramDisconnect)
